@@ -26,6 +26,9 @@
 #include <glib.h>
 #include <gtk/gtk.h>
 #include <math.h>
+#include <stdio.h>
+#include <string.h>
+
 
 #include "alsa_backend.h"
 #include "alsa_volume_mapping.h"
@@ -41,7 +44,8 @@ static snd_mixer_t *m_mixer = NULL;
 static GList *m_channel_names = NULL;
 static GList *m_device_names = NULL;
 static void (*m_volume_changed)(int, gboolean);
-
+static double max_vol = 153;
+static double full_vol = 100;
 //##############################################################################
 // Static functions
 //##############################################################################
@@ -94,15 +98,12 @@ int asound_get_volume()
 		return 0;
 	}
 
-	// Return the current volume value from [0-100]
-	if(config_get_use_logarithmic_scale()) {
-		long pmin, pmax, value;
-		snd_mixer_selem_get_playback_volume_range(m_elem, &pmin, &pmax);
-		snd_mixer_selem_get_playback_volume(m_elem, 0, &value);
-		return 100 * (value - pmin) / (pmax - pmin);
-	}
-	else
-		return rint(100 * get_normalized_playback_volume(m_elem, 0));
+	system("pactl list sinks | grep '^[[:space:]]Громкость:' | head -n $(( $SINK + 1 )) | tail -n 1 | sed -e 's,.* \\([0-9][0-9]*\\)%.*,\\1,' > /tmp/vol");
+    FILE* file = fopen ("/tmp/vol", "r");
+    int vol = 0;
+    fscanf (file, "%d", &vol);
+
+    return vol * (full_vol / max_vol);
 }
 
 gboolean asound_get_mute()
@@ -111,13 +112,11 @@ gboolean asound_get_mute()
 		return TRUE;
 	}
 
-	gboolean mute = FALSE;
-	if(snd_mixer_selem_has_playback_switch(m_elem)) {
-		int pswitch;
-		snd_mixer_selem_get_playback_switch(m_elem, 0, &pswitch);
-		mute = pswitch ? FALSE : TRUE;
-	}
-	return mute;
+	system("if pactl list sinks | grep '^[[:space:]]Звук выключен: no' ;then echo '0' > /tmp/vol_mute; else echo '1' > /tmp/vol_mute; fi");
+    FILE* file = fopen ("/tmp/vol_mute", "r");
+    int imute = 0;
+    fscanf (file, "%d", &imute);
+	return imute == 1;
 }
 
 gboolean asound_setup(const gchar *card, const gchar *channel,
@@ -272,12 +271,21 @@ void asound_set_mute(gboolean mute)
 		return;
 	}
 
-	if(snd_mixer_selem_has_playback_switch(m_elem)) {
-		snd_mixer_selem_set_playback_switch_all(m_elem, !mute);
-	}
-	else if(mute) {
-		asound_set_volume(0);
-	}
+	if(mute) {
+		system("pactl set-sink-mute 0 true");
+	} else {
+		system("pactl set-sink-mute 0 false");
+    }
+}
+
+char* integer_to_string(int x)
+{
+    char* buffer = malloc(sizeof(char) * sizeof(int) * 4 + 1);
+    if (buffer)
+    {
+         sprintf(buffer, "%d", x);
+    }
+    return buffer; 
 }
 
 void asound_set_volume(int volume)
@@ -285,14 +293,22 @@ void asound_set_volume(int volume)
 	if(m_elem == NULL) {
 		return;
 	}
-	volume = (volume < 0 ? 0 : (volume > 100 ? 100 : volume));
 
-	if(config_get_use_logarithmic_scale()) {
-		long pmin, pmax;
-		snd_mixer_selem_get_playback_volume_range(m_elem, &pmin, &pmax);
-		long value = pmin + (pmax - pmin) * volume / 100;
-		snd_mixer_selem_set_playback_volume_all(m_elem, value);
-	}
-	else
-		set_normalized_playback_volume_all(m_elem, volume / 100.0, 0);
+	volume = (volume < 0 ? 0 : (volume > max_vol ? max_vol : volume));
+
+    volume = volume * max_vol / full_vol;
+    
+    asound_set_mute(FALSE);
+
+	char *part = "pactl set-sink-volume 0 ";
+    char *vol_str = integer_to_string(volume);
+    char *amp = "%";
+
+    char command[strlen(part)+strlen(vol_str)+1];
+
+    strcpy(command, part);
+    strcat(command, vol_str);
+    strcat(command, amp);
+
+    system(command);
 }
