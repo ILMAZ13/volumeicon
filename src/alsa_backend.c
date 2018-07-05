@@ -34,6 +34,9 @@
 #include "alsa_volume_mapping.h"
 #include "config.h"
 
+int global_volume = -1;
+gboolean global_mute;
+gboolean global_not_setted = TRUE;
 //##############################################################################
 // Static variables
 //##############################################################################
@@ -98,12 +101,15 @@ int asound_get_volume()
 		return 0;
 	}
 
-	system("pactl list sinks | grep '^[[:space:]]Громкость:' | head -n $(( $SINK + 1 )) | tail -n 1 | sed -e 's,.* \\([0-9][0-9]*\\)%.*,\\1,' > /tmp/vol");
-    FILE* file = fopen ("/tmp/vol", "r");
-    int vol = 0;
-    fscanf (file, "%d", &vol);
-
-    return vol * (full_vol / max_vol);
+    if(global_volume == -1) {
+        fprintf(stderr, "SLOW GET VOL\n");
+	    system("pactl list sinks | grep '^[[:space:]]Громкость:' | head -n $(( $SINK + 1 )) | tail -n 1 | sed -e 's,.* \\([0-9][0-9]*\\)%.*,\\1,' > /tmp/vol");
+        FILE* file = fopen ("/tmp/vol", "r");
+        int vol = 0;
+        fscanf (file, "%d", &vol);
+        global_volume = vol * (full_vol / max_vol);
+    }
+    return global_volume; 
 }
 
 gboolean asound_get_mute()
@@ -112,11 +118,16 @@ gboolean asound_get_mute()
 		return TRUE;
 	}
 
-	system("if pactl list sinks | grep '^[[:space:]]Звук выключен: no' ;then echo '0' > /tmp/vol_mute; else echo '1' > /tmp/vol_mute; fi");
-    FILE* file = fopen ("/tmp/vol_mute", "r");
-    int imute = 0;
-    fscanf (file, "%d", &imute);
-	return imute == 1;
+    if (global_not_setted) {
+        fprintf(stderr, "SLOW GET MUTE\n");
+	    system("if pactl list sinks | grep '^[[:space:]]Звук выключен: no' ;then echo '0' > /tmp/vol_mute; else echo '1' > /tmp/vol_mute; fi");
+        FILE* file = fopen ("/tmp/vol_mute", "r");
+        int imute = 0;
+        fscanf (file, "%d", &imute);
+        global_mute = imute == 1;
+        global_not_setted = FALSE;
+    }
+	return global_mute;
 }
 
 gboolean asound_setup(const gchar *card, const gchar *channel,
@@ -271,6 +282,8 @@ void asound_set_mute(gboolean mute)
 		return;
 	}
 
+    global_mute = mute;
+
 	if(mute) {
 		system("pactl set-sink-mute 0 true");
 	} else {
@@ -295,6 +308,8 @@ void asound_set_volume(int volume)
 	}
 
 	volume = (volume < 0 ? 0 : (volume > max_vol ? max_vol : volume));
+
+    global_volume = volume;
 
     volume = volume * max_vol / full_vol;
     
